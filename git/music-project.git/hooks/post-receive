@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# 앤서블 변수에서 자동으로 채워집니다.
+JENKINS_URL="http://127.0.0.1:8080"
+USER_ID="bumseok"
+# slurp으로 읽어온 토큰 값을 바로 주입합니다.
+API_TOKEN="113befd0c64fc94ee3ce2b40416b58778d"
+
+JOB_NAME="Music-Service-Deploy"
+
+echo "--- Git Push 감지: Jenkins 빌드를 트리거합니다 (Job: $JOB_NAME) ---"
+
+curl -X POST -u "${USER_ID}:${API_TOKEN}" \
+"${JENKINS_URL}/job/${JOB_NAME}/build?delay=0sec"
+
+if [ $? -eq 0 ]; then
+    echo "--- Jenkins 빌드 요청 성공! ---"
+else
+    echo "--- Jenkins 빌드 요청 실패... 네트워크나 토큰을 확인하세요 ---"
+fi

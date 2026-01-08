@@ -1,0 +1,11 @@
+---
+- name: share ssh key
+  hosts: teammates
+  gather_facts: no
+
+  tasks:
+  - name: Set my ssh key
+    ansible.posix.authorized_key:
+      user: ansible-admin
+      state: present
+      key: "{{ lookup('file', '/home/ansible-admin/.ssh/id_rsa.pub') }}"
