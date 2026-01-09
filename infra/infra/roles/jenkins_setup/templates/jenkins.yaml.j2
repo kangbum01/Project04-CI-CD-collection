@@ -9,14 +9,14 @@ jenkins:
   authorizationStrategy:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
-  
+
   globalNodeProperties:
     - envVars:
         env:
           - key: "ansible"
             value: "/usr/bin/ansible-playbook"
           - key: "PYTHONPATH"
-            value: "/home/ansible-admin/.local/lib/python3.9/site-packages"
+            value: "/var/jenkins_home/.local/lib/python3.9/site-packages"
           - key: "ANSIBLE_HOST_KEY_CHECKING"
             value: "False"
 
@@ -25,47 +25,54 @@ unclassified:
     url: "http://{{ ansible_host }}:8080/"
 
 jobs:
-  - script: >
+  - script: |
       pipelineJob('{{ jenkins_job_name }}') {
+        // [1] 토큰도 일단은 가장 단순하게 처리
+        authenticationToken('{{ token_raw['content'] | b64decode | trim }}')
+        
         definition {
           cps {
-            script("""
+            script('''
               pipeline {
                 agent any
-                environment {
-                  ERROR_LOG_PATH = "{{ base_dir }}/logs/deploy_error_{% raw %}${BUILD_NUMBER}{% endraw %}.log"
-                }
                 stages {
                   stage('Checkout') {
                     steps {
-                      // git에게 해당 폴더의 안전성 보장
-                      sh 'git config --global --add safe.directory "*"'
+                      sh "git config --global --add safe.directory '*'"
                       git branch: 'main', url: 'file://{{ git_dir }}'
                     }
                   }
                   stage('Deploy to Web Server') {
                     steps {
-                      sh '''
-                      export PYTHONPATH=/home/ansible-admin/.local/lib/python3.9/site-packages
+                      sh """
+                      # 1. 앤서블 옵션들을 환경변수로 미리 정의 (가독성 향상)
                       export ANSIBLE_HOST_KEY_CHECKING=False
-                      # 줄바꿈 없이 한 줄로 작성하여 에러를 방지합니다.
-                      {% raw %}${ansible}{% endraw %} -i /home/ansible-admin/infra/inventory/hosts.ini /home/ansible-admin/infra/web_deploy/tasks/main.yml | tee ansible_output.log
-                      '''
+                      export ANSIBLE_INVENTORY="/home/ansible-admin/project/infra/infra/inventory/hosts.ini"
+                      export ANSIBLE_PRIVATE_KEY_FILE="/var/jenkins_home/.ssh/id_rsa"
+                      export ANSIBLE_SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                      
+                      # 2. 실행 명령어는 이제 딱 한 줄!
+                      set -o pipefail
+                      ansible-playbook /home/ansible-admin/project/infra/infra/web_deploy.yml \
+                        -e "src_path=${WORKSPACE}/web/" \
+                        | tee ansible_output.log
+                    """
                     }
                   }
                 }
                 post {
                   success { echo '🎉 배포 성공!' }
                   failure {
-                    sh "cp ansible_output.log {% raw %}${ERROR_LOG_PATH}{% endraw %}"
+                    // 변수 없이 고정 파일명으로 로그 복사
+                    sh "cp ansible_output.log {{ base_dir }}/logs/deploy_error.log"
                   }
                   always { 
-                    echo "빌드 완료 (#{% raw %}${BUILD_NUMBER}{% endraw %})"
+                    echo "빌드 완료"
                   }
                 }
               }
-            """.stripIndent())
-            sandbox(true) // 안전구역에서 돌리겠다 
+            '''.stripIndent())
+            sandbox(true)
           }
         }
       }

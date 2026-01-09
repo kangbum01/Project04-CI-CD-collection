@@ -4,8 +4,14 @@
 # firefox http://본인IP &
 
 ---
+- name: "0-1. SELinux를 Permissive 모드로 변경 (디버깅 및 마운트 원활화)"
+  ansible.posix.selinux:
+    policy: targeted
+    state: permissive
+  become: yes  # root 권한 필요
+  
 # 0. 도커 서비스 기동
-- name: "0. 도커 서비스 시작 및 활성화"
+- name: "0-2. 도커 서비스 시작 및 활성화"
   ansible.builtin.service:
     name: docker
     state: started
@@ -17,8 +23,8 @@
     path: "{{ item }}" # item은 loop문에 사용되는 변수입니다.
     state: directory
     owner: "1000"
-    group: ansible-admin
-    mode: '0775'
+    group: "{{ target_gid }}"
+    mode: '2775' # 2는 setgid 비트로 부모 디렉토리 그룹을 상속
     recurse: yes
   loop:
     - "{{ jenkins_home }}/casc_configs"
@@ -26,20 +32,63 @@
     - "{{ base_dir }}/logs"      # 파이프라인 에러 로그가 쌓일 곳
     - "{{ git_dir }}"          # Git 저장소 폴더 미리 생성
 
+- name: "1-2-2. ACL 관리 도구 설치"
+  ansible.builtin.package:
+    name: acl
+    state: present
+  become: true
+
+# [핵심] 1-2-3. ACL을 사용한 SSH 권한 부여 (소유권 변경 없이 공유)
+- name: "FACL을 사용하여 젠킨스(1000)에게 SSH 키 접근 권한 부여"
+  block:
+    - name: "호스트 SSH 폴더(0700) 및 키(0600) 권한 정립"
+      ansible.builtin.file:
+        path: "/home/ansible-admin/.ssh/{{ item.path }}"
+        owner: "ansible-admin"
+        group: "ansible-admin"
+        mode: "{{ item.mode }}"
+        state: "{{ item.state }}"
+      loop:
+        - { path: "", mode: "0700", state: "directory" }
+        - { path: "id_rsa", mode: "0600", state: "file" }
+
+    - name: ".ssh 폴더에 젠킨스(1000) 진입 권한 추가"
+      ansible.posix.acl:
+        path: "/home/ansible-admin/.ssh"
+        entity: "1000"
+        etype: user
+        permissions: rx
+        state: present
+
+    - name: "id_rsa 키 파일에 젠킨스(1000) 읽기 권한 추가"
+      ansible.posix.acl:
+        path: "/home/ansible-admin/.ssh/id_rsa"
+        entity: "1000"
+        etype: user
+        permissions: r
+        state: present
+  become: true
+
 # 2. 파일 및 설정 배치 (반복문으로 통합)
-- name: "2. 젠킨스 및 Git 설정 파일 배치"
+- name: "2. 젠킨스 초기 설정 파일 배치"
   ansible.builtin.template:
-    src: "{{ item.src }}"
-    dest: "{{ item.dest }}"
+    src: 'generate-token.groovy.j2'
+    dest: "{{ jenkins_home }}/init.groovy.d/generate-token.groovy"
     owner: "1000"
     group: ansible-admin
-    mode: "{{ item.mode | default('0664') }}"
+    mode: '0664'
   become: true
-  loop:
-    - { src: 'jenkins.yaml.j2', dest: "{{ jenkins_home }}/casc_configs/jenkins.yaml" }
-    - { src: 'generate-token.groovy.j2', dest: "{{ jenkins_home }}/init.groovy.d/generate-token.groovy" }
-    - { src: 'post-receive.j2', dest: "{{ git_dir }}/hooks/post-receive", mode: '0755' }
 
+# [추가] 젠킨스가 부팅될 때 파일이 없어서 죽는 것을 방지하는 '미끼' 파일입니다.
+- name: "젠킨스 부팅용 임시 설정 파일 생성"
+  ansible.builtin.copy:
+    content: "jenkins: {}" # 최소한의 데이터만 넣습니다.
+    dest: "{{ jenkins_home }}/casc_configs/jenkins.yaml"
+    owner: "1000"
+    group: ansible-admin
+    mode: '0664'
+  become: true
+  
 # 3. Docker 이미지 빌드 및 실행
 - name: "3-1. 커스텀 젠킨스 이미지 빌드"
   community.docker.docker_image:
@@ -63,10 +112,10 @@
       JENKINS_ADMIN_PW: "{{ admin_pw }}"
       JAVA_OPTS: "-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true"
     volumes:
-      - "{{ jenkins_home }}:/var/jenkins_home"
-      - "/home/ansible-admin:/home/ansible-admin" # 호스트 설정 공유
-      - "/home/ansible-admin/.ssh:/var/jenkins_home/.ssh" # SSH 연동
-
+      - "{{ jenkins_home }}:/var/jenkins_home:Z"
+      - "{{ jenkins_home }}/.ssh:/var/jenkins_home/.ssh:Z"
+      # 개별 폴더 대신 project 폴더 전체를 마운트하는 것을 권장합니다.
+      - "/home/ansible-admin/project:/home/ansible-admin/project:Z"
 - name: "4. 토큰 추출 대기"
   ansible.builtin.wait_for:
     path: "{{ jenkins_home }}/api_token.txt"
@@ -77,6 +126,23 @@
     src: "{{ jenkins_home }}/api_token.txt"
   register: token_raw
 
+# [추가] 이제 토큰이 생겼으니 jenkins.yaml을 만듭니다.
+- name: "5-2. 확보된 토큰을 포함하여 jenkins.yaml 배치"
+  ansible.builtin.template:
+    src: 'jenkins.yaml.j2'
+    dest: "{{ jenkins_home }}/casc_configs/jenkins.yaml"
+    owner: "1000"
+    group: ansible-admin
+    mode: '0664'
+  become: true
+
+# [추가] 설정을 반영하기 위해 젠킨스를 한 번 껐다 켭니다.
+- name: "5-3. 설정 반영을 위한 젠킨스 재시작"
+  community.docker.docker_container:
+    name: jenkins-server
+    state: started
+    restart: true
+  become: true
 # --- Git 저장소 설정 파트 ---
 
 # roles/jenkins_setup/tasks/main.yml
@@ -93,28 +159,38 @@
     executable: /bin/bash
   become: true  # root 권한으로 실행하여 폴더 생성 및 초기화 해결
 
-- name: "7. Jenkins 및 관리 유저를 위한 최종 권한 설정"
-  ansible.builtin.file:
+# 7. AI 서버와 젠킨스 협업을 위한 ACL 및 Git 설정
+- name: "7-1. Git 저장소 ACL 권한 부여 (소유권 분쟁 해결)"
+  ansible.posix.acl:
     path: "{{ git_dir }}"
-    state: directory
-    owner: "1000"       # 젠킨스 컨테이너 유저
-    group: ansible-admin # 호스트 관리자 그룹
-    mode: '0775'        # 그룹에 쓰기 권한 부여
-    recurse: yes
+    entity: "{{ item.id }}"
+    etype: "{{ item.type }}"
+    permissions: rwx
+    state: present
+    recursive: yes
+    # default: yes는 앞으로 새로 생길 파일(새 커밋)에도 자동으로 이 권한을 적용합니다. (매우 중요)
+    default: yes 
+  loop:
+    - { id: "1000", type: "user" }        # 젠킨스 유저
+    - { id: "{{ target_gid }}", type: "group" }  # 관리자/AI 서버 그룹
   become: true
 
-- name: "7-2. Git 보안 설정 (Safe Directory 등록)"
-  ansible.builtin.command: "git config --global --add safe.directory {{ git_dir }}"
+- name: "7-2. Git 저장소 내부 동작 설정 (Shared & Force Push)"
+  ansible.builtin.shell: |
+    # 1. 그룹 공유 저장소 모드 활성화 (Git 내부 로직)
+    git config --file {{ git_dir }}/config core.sharedRepository group
+    # 2. 강제 푸시(Non-Fast-Forward) 허용
+    git config --file {{ git_dir }}/config receive.denyNonFastForwards false
   become: true
-  become_user: ansible-admin  # 중요: 푸시를 시도하는 유저 계정에 등록
 
 - name: "8. Git post-receive 훅 배포 (변수 주입)"
   ansible.builtin.template:
     src: "post-receive.j2"
     dest: "{{ git_dir }}/hooks/post-receive"
-    owner: ansible-admin
-    group: ansible-admin
+    owner: "1000"
+    group: "1002"
     mode: '0755'
+  become: true
 
 - name: "9. 최종 결과 출력"
   ansible.builtin.debug:
@@ -123,3 +199,9 @@
       - "URL: http://{{ ansible_host }}:8080"
       - "Job Name: {{ jenkins_job_name }}"
       - "Token: {{ token_raw['content'] | b64decode }}"
+
+- name: "10. 보안을 위한 token 제거"
+  ansible.builtin.file:
+    path: "{{ jenkins_home }}/api_token.txt"
+    state: absent
+  become: true

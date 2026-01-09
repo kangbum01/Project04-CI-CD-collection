@@ -13,5 +13,9 @@ def tokenName = "ansible-generated-token"
 def result = apiTokenProperty.tokenStore.generateNewToken(tokenName)
 user.save()
 
+// 권한을 600으로 설정하여 저장 (보안 강화)
+def tokenFile = new File("/var/jenkins_home/api_token.txt")
+tokenFile.text = result.plainValue
+
 // 3. 앤서블이 읽을 수 있게 파일로 저장 (핵심!)
 new File("/var/jenkins_home/api_token.txt").text = result.plainValue

@@ -18,18 +18,42 @@
     state: present
   become: true
 
-# 1. 권한 구조 일괄 정리 (범석님 제안 핵심 반영)
-# 작업 시작 전 소유권을 확실히 잡아 이후 에러를 원천 차단합니다.
-- name: "1. Change ownership to ansible-admin"
-  ansible.builtin.file:
-    path: "{{ project_dir }}"
-    owner: ansible-admin
-    group: ansible-admin
-    state: directory
-    recurse: yes
-    mode: '0775'
-  become: true
+# # 1. 권한 구조 일괄 정리 (범석님 제안 핵심 반영)
+# # 작업 시작 전 소유권을 확실히 잡아 이후 에러를 원천 차단합니다.
+# - name: "1. AI 서버 소유권 및 그룹 설정 (젠킨스 사용)"
+#   ansible.builtin.file:
+#     path: "{{ project_dir }}"
+#     owner: "{{ user_name }}"
+#     group: "{{ target_gid | default('1002') }}"
+#     state: directory
+#     recurse: yes
+#     mode: '2775'
+#   become: true
 
+# 1. 권한 구조 일괄 정리 (범석님 제안: 입구부터 데이터까지 싹 다 개방)
+- name: "1. 서버 진입 및 프로젝트 폴더 권한 일괄 개방"
+  block:
+    - name: "1-1. 홈 디렉토리 진입 권한 부여 (755)"
+      ansible.builtin.file:
+        path: "/home/ansible-admin"
+        state: directory
+        mode: '0755'  # 외부 유저나 컨테이너가 이 폴더를 '통과'할 수 있게 함
+      become: true
+
+    - name: "1-2. 프로젝트 폴더 소유권 및 권한 강제 설정 (777)"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: "{{ user_name }}"
+        group: "{{ target_gid | default('1002') }}"
+        state: directory
+        recurse: yes
+        # 2777: 777로 다 열되, 상위 그룹 권한을 하위 파일들이 그대로 이어받게 함(setgid)
+        mode: '2777' 
+      loop:
+        - "{{ project_dir }}"
+        - "{{ git_dir | default('/home/ansible-admin/project/git') }}" # Git 저장소 경로가 있다면 포함
+      become: true
+      
 # 2. Git 환경 설정
 - name: "2. Configure Git User & Environment"
   block:
@@ -40,7 +64,7 @@
         scope: global
       loop:
         - { name: 'user.name', value: "{{ ansible_hostname }}" }
-        - { name: 'user.email', value: 'teammate@music.project' }
+        - { name: 'user.email', value: '{{ git_user_email }}' }
         - { name: 'init.defaultBranch', value: 'main' }
         - { name: 'safe.directory', value: '*' }
   become: false
@@ -48,27 +72,26 @@
 # 3. 프로젝트 폴더 이동 및 Git 초기화
 - name: "3. Initialize Git Repository"
   ansible.builtin.shell: |
-    cd {{ project_dir }}
-    if [ ! -d .git ]; then 
-      git init
-      git branch -M main
-    fi
-    git add .
-    git commit -m "Initial commit by Ansible" || true
+    git init
+    git branch -M main
   args:
-    executable: /bin/bash
+    chdir: "{{ project_dir }}"
+    creates: "{{ project_dir }}/.git"
   become: false
 
 # 4. 원격 저장소 등록 및 푸시
-- name: "4. Add Remote and Push to Server"
+- name: "4. Remote 등록 및 Push"
   ansible.builtin.shell: |
-    cd {{ project_dir }}
-    git remote remove origin || true
+    # origin이 이미 있으면 주소만 업데이트, 없으면 생성
+    git remote set-url origin ansible-admin@{{ git_server_ip }}:{{ git_dir }} || \
     git remote add origin ansible-admin@{{ git_server_ip }}:{{ git_dir }}
-    
-    export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
+    git add .
+    git commit -m "AI Analysis Result: {{ ansible_date_time.iso8601 }}" || true
     git push -f origin main
   args:
+    chdir: "{{ project_dir }}"
     executable: /bin/bash
   become: false
 

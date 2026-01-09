@@ -5,8 +5,8 @@ USER root
 RUN apt-get update && apt-get install -y \
     ansible \
     python3-pip \
+    python3-docker \
     && apt-get clean
-
 
 
 # 플러그인 자동 설치 (JCasC, Git, Pipeline, Ansible 등)

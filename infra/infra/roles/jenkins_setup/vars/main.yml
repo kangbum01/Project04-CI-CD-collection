@@ -11,3 +11,5 @@ jenkins_admin_id: "bumseok"
 jenkins_admin_pw: "mypassword123"
 jenkins_home_dir: "/home/ansible-admin/jenkins_data"
 jenkins_job_name: "Music-Service-Deploy"
+
+
