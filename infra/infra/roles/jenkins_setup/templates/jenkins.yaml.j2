@@ -1,0 +1,71 @@
+# roles/jenkins_setup/templates/jenkins.yaml.j2
+jenkins:
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "{{ admin_id }}"
+          password: "{{ admin_pw }}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+  
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "ansible"
+            value: "/usr/bin/ansible-playbook"
+          - key: "PYTHONPATH"
+            value: "/home/ansible-admin/.local/lib/python3.9/site-packages"
+          - key: "ANSIBLE_HOST_KEY_CHECKING"
+            value: "False"
+
+unclassified:
+  location:
+    url: "http://{{ ansible_host }}:8080/"
+
+jobs:
+  - script: >
+      pipelineJob('{{ jenkins_job_name }}') {
+        definition {
+          cps {
+            script("""
+              pipeline {
+                agent any
+                environment {
+                  ERROR_LOG_PATH = "{{ base_dir }}/logs/deploy_error_{% raw %}${BUILD_NUMBER}{% endraw %}.log"
+                }
+                stages {
+                  stage('Checkout') {
+                    steps {
+                      // git에게 해당 폴더의 안전성 보장
+                      sh 'git config --global --add safe.directory "*"'
+                      git branch: 'main', url: 'file://{{ git_dir }}'
+                    }
+                  }
+                  stage('Deploy to Web Server') {
+                    steps {
+                      sh '''
+                      export PYTHONPATH=/home/ansible-admin/.local/lib/python3.9/site-packages
+                      export ANSIBLE_HOST_KEY_CHECKING=False
+                      # 줄바꿈 없이 한 줄로 작성하여 에러를 방지합니다.
+                      {% raw %}${ansible}{% endraw %} -i /home/ansible-admin/infra/inventory/hosts.ini /home/ansible-admin/infra/web_deploy/tasks/main.yml | tee ansible_output.log
+                      '''
+                    }
+                  }
+                }
+                post {
+                  success { echo '🎉 배포 성공!' }
+                  failure {
+                    sh "cp ansible_output.log {% raw %}${ERROR_LOG_PATH}{% endraw %}"
+                  }
+                  always { 
+                    echo "빌드 완료 (#{% raw %}${BUILD_NUMBER}{% endraw %})"
+                  }
+                }
+              }
+            """.stripIndent())
+            sandbox(true) // 안전구역에서 돌리겠다 
+          }
+        }
+      }

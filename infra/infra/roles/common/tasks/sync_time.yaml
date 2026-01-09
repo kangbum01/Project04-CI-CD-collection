@@ -1,0 +1,28 @@
+---
+- name: "All Time Sync(ex: KST)"
+  tasks:
+    # 시간 설정을 한국으로 설정합니다.
+    - name: "1. Set timezone KST"
+      community.general.timezone:
+        name: Asia/Seoul
+    
+    # Chronyd 도구를 설치합니다.
+    - name: "2. Install Chronyd"
+      ansible.builtin.yum:
+        name: chrony
+        state: present
+    
+    # 서버의 시간 본부를 30.0.3.1로 설정합니다.
+    - name: "3. Set time headquarters"
+      ansible.builtin.lineinfile:
+        path: /etc/chrony.conf
+        line: "server 10.4.3.10 iburst"
+        state: present
+
+    # Chroyd 서비스를 재 시작하여 변경 내용을 추가합니다.
+    - name: "4. Restart service"
+      ansible.builtin.systemd:
+        state: restarted
+        name: chronyd
+        enabled: yes
+        

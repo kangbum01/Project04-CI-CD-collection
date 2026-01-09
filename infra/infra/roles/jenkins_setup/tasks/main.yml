@@ -1,0 +1,125 @@
+#jenkins_setup-tasks-main.yml
+# 사용법
+# ansible-playbook -i hosts.ini install_Jenkins.yaml
+# firefox http://본인IP &
+
+---
+# 0. 도커 서비스 기동
+- name: "0. 도커 서비스 시작 및 활성화"
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+# 1. 디렉토리 생성 및 권한 설정 (핵심: 젠킨스 UID 1000 적용)
+- name: "1. 필수 디렉토리 생성"
+  ansible.builtin.file:
+    path: "{{ item }}" # item은 loop문에 사용되는 변수입니다.
+    state: directory
+    owner: "1000"
+    group: ansible-admin
+    mode: '0775'
+    recurse: yes
+  loop:
+    - "{{ jenkins_home }}/casc_configs"
+    - "{{ jenkins_home }}/init.groovy.d"
+    - "{{ base_dir }}/logs"      # 파이프라인 에러 로그가 쌓일 곳
+    - "{{ git_dir }}"          # Git 저장소 폴더 미리 생성
+
+# 2. 파일 및 설정 배치 (반복문으로 통합)
+- name: "2. 젠킨스 및 Git 설정 파일 배치"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "1000"
+    group: ansible-admin
+    mode: "{{ item.mode | default('0664') }}"
+  become: true
+  loop:
+    - { src: 'jenkins.yaml.j2', dest: "{{ jenkins_home }}/casc_configs/jenkins.yaml" }
+    - { src: 'generate-token.groovy.j2', dest: "{{ jenkins_home }}/init.groovy.d/generate-token.groovy" }
+    - { src: 'post-receive.j2', dest: "{{ git_dir }}/hooks/post-receive", mode: '0755' }
+
+# 3. Docker 이미지 빌드 및 실행
+- name: "3-1. 커스텀 젠킨스 이미지 빌드"
+  community.docker.docker_image:
+    name: custom-jenkins
+    tag: latest
+    build:
+      path: "{{ role_path }}/files/"
+    source: build
+
+- name: "3-2. 커스텀 젠킨스 이미지 실행"
+  community.docker.docker_container:
+    name: jenkins-server
+    image: custom-jenkins:latest
+    state: started
+    restart_policy: always
+    ports:
+      - "8080:8080"
+    env:
+      CASC_JENKINS_CONFIG: "/var/jenkins_home/casc_configs/jenkins.yaml"
+      JENKINS_ADMIN_ID: "{{ admin_id }}"
+      JENKINS_ADMIN_PW: "{{ admin_pw }}"
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true"
+    volumes:
+      - "{{ jenkins_home }}:/var/jenkins_home"
+      - "/home/ansible-admin:/home/ansible-admin" # 호스트 설정 공유
+      - "/home/ansible-admin/.ssh:/var/jenkins_home/.ssh" # SSH 연동
+
+- name: "4. 토큰 추출 대기"
+  ansible.builtin.wait_for:
+    path: "{{ jenkins_home }}/api_token.txt"
+    timeout: 300
+
+- name: "5. 토큰 값 변수 등록 (slurp)"
+  ansible.builtin.slurp:
+    src: "{{ jenkins_home }}/api_token.txt"
+  register: token_raw
+
+# --- Git 저장소 설정 파트 ---
+
+# roles/jenkins_setup/tasks/main.yml
+
+- name: "6. Git Bare 저장소 초기화 (옵션 통합)"
+  ansible.builtin.shell: |
+    # 디렉토리가 없으면 생성
+    mkdir -p {{ git_dir }}
+    # 해당 디렉토리로 이동 후 초기화 (공유 설정 포함)
+    if [ ! -d "{{ git_dir }}/objects" ]; then
+      git init --bare --shared=group {{ git_dir }}
+    fi
+  args:
+    executable: /bin/bash
+  become: true  # root 권한으로 실행하여 폴더 생성 및 초기화 해결
+
+- name: "7. Jenkins 및 관리 유저를 위한 최종 권한 설정"
+  ansible.builtin.file:
+    path: "{{ git_dir }}"
+    state: directory
+    owner: "1000"       # 젠킨스 컨테이너 유저
+    group: ansible-admin # 호스트 관리자 그룹
+    mode: '0775'        # 그룹에 쓰기 권한 부여
+    recurse: yes
+  become: true
+
+- name: "7-2. Git 보안 설정 (Safe Directory 등록)"
+  ansible.builtin.command: "git config --global --add safe.directory {{ git_dir }}"
+  become: true
+  become_user: ansible-admin  # 중요: 푸시를 시도하는 유저 계정에 등록
+
+- name: "8. Git post-receive 훅 배포 (변수 주입)"
+  ansible.builtin.template:
+    src: "post-receive.j2"
+    dest: "{{ git_dir }}/hooks/post-receive"
+    owner: ansible-admin
+    group: ansible-admin
+    mode: '0755'
+
+- name: "9. 최종 결과 출력"
+  ansible.builtin.debug:
+    msg: 
+      - "🚀 젠킨스 자동화 세팅 완료!"
+      - "URL: http://{{ ansible_host }}:8080"
+      - "Job Name: {{ jenkins_job_name }}"
+      - "Token: {{ token_raw['content'] | b64decode }}"
