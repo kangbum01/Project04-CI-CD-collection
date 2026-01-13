@@ -46,38 +46,26 @@
 # ==============================================================================
 # 2. 키 관련 파트 (SSH & Security Hardening)
 # ==============================================================================
-- name: "2. Jenkins Deploy Key 권한 정립"
-  become: true
+- name: "2. SSH 키 권한 정립 (FACL 활용)"
   block:
-    - name: "2-1. Jenkins .ssh 디렉토리"
+    - name: "2-1. 호스트 SSH 폴더 및 키 권한 설정(0600)"
       ansible.builtin.file:
-        path: "{{ jenkins_home }}/.ssh"
-        state: directory
+        path: "/home/ansible-admin/.ssh/{{ item.path }}"
         owner: "1000"
-        group: "{{ target_gid }}"
-        mode: "0700"
-
-- name: "2-2. Jenkins deploy key 존재 확인"
-  ansible.builtin.stat:
-    path: "{{ jenkins_home }}/.ssh/jenkins_deploy"
-  register: jenkins_key
-
-- name: "Jenkins deploy key 없으면 생성(덮어쓰기 금지)"
+        group: "1000"
+        mode: "{{ item.mode }}"
+        state: "{{ item.state }}"
+      loop:
+        - { path: "", mode: "0700", state: "directory" }
+        - { path: "id_rsa", mode: "0600", state: "file" }
   become: true
-  ansible.builtin.command: >
-    ssh-keygen -t ed25519 -N "" -f {{ jenkins_home }}/.ssh/jenkins_deploy
-  args:
-    creates: "{{ jenkins_home }}/.ssh/jenkins_deploy"
-
-
-- name: "2-2-2. Jenkins deploy key 권한 설정(0600)"
-  ansible.builtin.file:
-    path: "{{ jenkins_home }}/.ssh/jenkins_deploy"
-    owner: "1000"
-    group: "{{ target_gid }}"
-    mode: "0600"
-    state: file
-
+  # - name: "2-2. Jenkins(1000)에게 SSH 키 읽기 권한만 부여"
+  #   ansible.posix.acl:
+  #     path: "/home/ansible-admin/.ssh/id_rsa"
+  #     entity: "1000"
+  #     etype: user
+  #     permissions: r
+  #     state: present
 # ==============================================================================
 # 3. 젠킨스 초기 기동 설정
 # ==============================================================================
@@ -97,16 +85,6 @@
         dest: "{{ jenkins_home }}/casc_configs/jenkins.yaml"
         owner: "1000"
         mode: '0664'
-    - name: "3-3. 젠킨스 커스텀 이미지 빌드"
-      community.docker.docker_image:
-        name: "custom-jenkins"
-        tag: "latest"
-        build:
-          path: "/home/ansible-admin/project/Project04-CI-CD-collection/infra/infra/roles/jenkins_setup/files"
-          pull: yes
-        source: build
-        state: present
-      become: true
 
     - name: "3-3. 젠킨스 컨테이너 실행"
       community.docker.docker_container:
@@ -125,6 +103,7 @@
         volumes:
           - "{{ jenkins_home }}:/var/jenkins_home:Z"
           # [핵심] 호스트의 원본 경로를 컨테이너 내부 경로로 직접 매핑
+          - "/home/ansible-admin/.ssh/id_rsa:/var/jenkins_home/.ssh/id_rsa:ro,Z"
           - "/home/ansible-admin/project:/home/ansible-admin/project:Z"
       become: true
 
@@ -163,8 +142,6 @@
 - name: "5. Git 저장소 및 post-receive 설정"
   block:
     - name: "5-1. Git Bare 저장소 생성 및 초기화"
-      become: true
-      become_user: ansible-admin
       ansible.builtin.shell: |
         mkdir -p {{ git_dir }}
         if [ ! -d "{{ git_dir }}/objects" ]; then
