@@ -27,51 +27,62 @@ unclassified:
 jobs:
   - script: |
       pipelineJob('{{ jenkins_job_name }}') {
-        // [1] 토큰도 일단은 가장 단순하게 처리
+        // [1] 인증 토큰 설정
         authenticationToken('{{ token_raw['content'] | b64decode | trim }}')
         
         definition {
           cps {
-            script('''
+            // 외부를 """로 감싸고 내부의 $는 \$로 이스케이프하여 충돌 방지
+            script(""" 
               pipeline {
                 agent any
                 stages {
                   stage('Checkout') {
                     steps {
                       sh "git config --global --add safe.directory '*'"
-                      git branch: 'main', url: 'file://{{ git_dir }}'
+                      git branch: 'main', url: 'file:///home/ansible-admin/project/git/music-project.git'
                     }
                   }
                   stage('Deploy to Web Server') {
                     steps {
-                      sh """
-                      REPO="/home/ansible-admin/project/Project04-CI-CD-collection"
+                      sh '''
+                        set -euo pipefail
+                        REPO="/home/ansible-admin/project/Project04-CI-CD-collection"
 
-                      export ANSIBLE_HOST_KEY_CHECKING=False
-                      export ANSIBLE_PRIVATE_KEY_FILE="/var/jenkins_home/.ssh/jenkins_deploy"
-                      export ANSIBLE_SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                        echo "[DEBUG] PWD=\$(pwd)"
+                        echo "[DEBUG] WORKSPACE=\$WORKSPACE"
+                        echo "[DEBUG] REPO=\$REPO"
 
-                      set -o pipefail
-                      ansible-playbook -i "${REPO}/inventory/hosts.ini" "${REPO}/web_deploy.yml" \
-                      -e "src_path=${WORKSPACE}/web/" \
-                      | tee ansible_output.log
-                    """
+                        export ANSIBLE_HOST_KEY_CHECKING=False
+                        export ANSIBLE_PRIVATE_KEY_FILE="/var/jenkins_home/.ssh/jenkins_deploy"
+                        export ANSIBLE_SSH_ARGS="-o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no -o ControlPersist=no"
+
+                        ansible-playbook -i "\$REPO/inventory/hosts.ini" "\$REPO/web_deploy.yml" \\
+                                         -e "src_path=\$WORKSPACE/web/" \\
+                                         | tee ansible_output.log
+                      '''
                     }
                   }
                 }
                 post {
-                  success { echo '🎉 배포 성공!' }
-                  failure {
-                    // 변수 없이 고정 파일명으로 로그 복사
-                    sh "cp ansible_output.log {{ base_dir }}/logs/deploy_error.log"
+                  success { 
+                    echo '🎉 배포 성공!' 
                   }
-                  always { 
+                  failure {
+                    sh '''
+                      if [ -f ansible_output.log ]; then
+                        cp ansible_output.log /home/ansible-admin/project/logs/deploy_error.log
+                      fi
+                    '''
+                  }
+                  always {
                     echo "빌드 완료"
                   }
                 }
               }
-            '''.stripIndent())
+            """.stripIndent())
             sandbox(true)
           }
         }
       }
+      

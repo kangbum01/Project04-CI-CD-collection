@@ -70,6 +70,7 @@
     - name: "Jenkins 역할 로드"
       ansible.builtin.include_role:
         name: jenkins_setup
+      tags: jenkins-setup
 
 - name: "Step 3: Execute AI Automation"
   hosts: AI_Server
@@ -78,6 +79,7 @@
     - name: "AI 서버 및 Git 연결 역할 로드"
       ansible.builtin.include_role:
         name: ai_analysis
+      tags: ai-server
 
 # ==============================================================================
 # [ HISTORY & TROUBLESHOOTING ]

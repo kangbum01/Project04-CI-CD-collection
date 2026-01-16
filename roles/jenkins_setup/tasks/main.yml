@@ -2,7 +2,7 @@
 # 사용법
 # ansible-playbook -i hosts.ini install_Jenkins.yaml
 # firefox http://본인IP &
-
+# 작업 전에는 무조건 lb서버에 jekins_deploy 보내기
 ---
 
 ####################################################################
@@ -175,10 +175,10 @@
       CASC_JENKINS_CONFIG: "/var/jenkins_home/casc_configs/jenkins.yaml"
       JENKINS_ADMIN_ID: "{{ admin_id }}"
       JENKINS_ADMIN_PW: "{{ admin_pw }}"
-      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true"
     volumes:
       - "{{ jenkins_home }}:/var/jenkins_home:Z"
-      # - "/home/ansible-admin/project:/home/ansible-admin/project:Z"
+      - "/home/ansible-admin/project:/home/ansible-admin/project:Z"
 
 - name: "API 토큰 생성 대기"
   wait_for:
@@ -203,17 +203,30 @@
     state: started
     restart: true
 
-####################################################################
-# 5. Git Bare Repository 구성 (CI 트리거용)
-####################################################################
-- name: "5-1. Git Bare 저장소 초기화"
-  ansible.builtin.shell: |
-    mkdir -p {{ git_dir }}
-    if [ ! -d "{{ git_dir }}/objects" ]; then
-      git init --bare --shared=group {{ git_dir }}
-    fi
-  args:
-    executable: /bin/bash
+# ✅ Git safe.directory 설정 (system) - dubious ownership 방지
+# - 여러 사용자/UID(젠킨스/AI/관리자)가 같은 bare repo를 만져도 안전 처리되도록
+- name: "5-1b. Git safe.directory 목록 조회 (system)"
+  become: true
+  ansible.builtin.command: git config --system --get-all safe.directory
+  register: safe_dirs
+  changed_when: false
+  failed_when: false  # 아직 설정이 없으면 rc!=0 가능하므로 무시
+
+- name: "5-1c. Git safe.directory에 bare repo 경로 추가 (system)"
+  become: true
+  ansible.builtin.command: git config --system --add safe.directory "*"
+  when: safe_dirs.stdout is not defined or (git_dir not in safe_dirs.stdout_lines | default([]))
+
+- name: "5-1d. Git safe.directory 최종 확인 (system)"
+  become: true
+  ansible.builtin.command: git config --system --get-all safe.directory
+  register: safe_dirs_after
+  changed_when: false
+
+# ✅ (선택) 디버그로 실제 등록 확인하고 싶으면 주석 해제
+- name: "DEBUG safe.directory"
+  ansible.builtin.debug:
+    var: safe_dirs_after.stdout_lines
 
 - name: "5-2. Git 저장소 ACL 설정"
   ansible.posix.acl:

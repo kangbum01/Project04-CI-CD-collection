@@ -3,7 +3,7 @@
   ansible.builtin.file:
     path: "/home/ansible-admin/music_project"
     state: directory
-    owner: "1000"
+    owner: "1002"
     group: "{{ target_gid }}"
     mode: '2755'
   become: true
@@ -12,8 +12,8 @@
   ansible.builtin.copy:
     # 젠킨스 컨테이너의 호스트 마운트 경로를 참조합니다.
     src: "{{ src_path | default('./web/') }}"
-    dest: "/tmp"
-    owner: 1000
+    dest: "usr/share/nginx/html/music-project/" #
+    owner: 1002
     group: "{{ target_gid }}"
     mode: '0644'
   become: true

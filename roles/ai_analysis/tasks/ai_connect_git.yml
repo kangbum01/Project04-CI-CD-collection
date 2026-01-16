@@ -8,6 +8,8 @@
 # 1. music-project.git 폴더로 이동
 # 2. git log main 으로 log 확인
 # 3. git show main:result.txt로 내용 확인 가능
+# 4. git ls-tree -rt 60c596beae4c07cd2954fe415065e48919a1f6bb
+# 5. git show 60c596beae4c07cd2954fe415065e48919a1f6bb:web/theme.json
 # ==============================================================================
 
 ---
@@ -50,13 +52,6 @@
       loop:
         - "{{ project_dir }}"
         - "{{ git_dir | default('/home/ansible-admin/project/git') }}" # Git 저장소 경로가 있다면 포함
-    
-    - name: "AI 서버 내부의 SSH 키 권한 강제 복구"
-      ansible.builtin.file:
-        path: "/home/ansible-admin/.ssh/id_rsa"
-        owner: "1000"
-        mode: '0600'
-        state: file
   become: true
       
 # 2. Git 환경 설정
@@ -88,13 +83,15 @@
 - name: "4. Remote 등록 및 Push"
   ansible.builtin.shell: |
     # origin이 이미 있으면 주소만 업데이트, 없으면 생성
+    git config --global --add safe.directory {{ project_dir }} || true
+
     git remote set-url origin ansible-admin@{{ git_server_ip }}:{{ git_dir }} || \
     git remote add origin ansible-admin@{{ git_server_ip }}:{{ git_dir }}
 
     export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
     git add .
     git commit -m "AI Analysis Result: {{ ansible_date_time.iso8601 }}" || true
-    git push -f origin main
+    git push -u -f origin main
   args:
     chdir: "{{ project_dir }}"
     executable: /bin/bash
